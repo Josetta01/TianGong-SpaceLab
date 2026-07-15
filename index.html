@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tiangong Space Lab Sandbox</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #000; color: #fff; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        #ui-overlay { position: absolute; top: 20px; left: 20px; z-index: 10; pointer-events: none; }
+        .panel { background: rgba(10, 15, 30, 0.85); border: 1px solid #1e3a8a; padding: 20px; border-radius: 8px; pointer-events: auto; max-width: 300px; }
+        h1 { margin: 0 0 10px 0; font-size: 1.2rem; color: #38bdf8; text-transform: uppercase; letter-spacing: 1px; }
+        .control-group { margin-bottom: 15px; }
+        label { display: block; font-size: 0.85rem; margin-bottom: 5px; color: #94a3b8; }
+        input[type="range"] { width: 100%; }
+        .btn { background: #0284c7; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; width: 100%; transition: 0.2s; }
+        .btn:hover { background: #0369a1; }
+        #telemetry { position: absolute; bottom: 20px; right: 20px; z-index: 10; }
+    </style>
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-overlay">
+        <div class="panel">
+            <h1>Tiangong Sandbox</h1>
+            <p style="font-size: 0.8rem; margin-top: 0; color: #64748b;">Water Surface Tension Experiment</p>
+            
+            <div class="control-group">
+                <label id="gravity-label">Gravity: 0.00 m/s²</label>
+                <input type="range" id="gravity" min="0" max="10" step="0.1" value="0">
+            </div>
+
+            <div class="control-group">
+                <label id="tension-label">Surface Tension: 5.0</label>
+                <input type="range" id="tension" min="1" max="10" step="0.5" value="5">
+            </div>
+
+            <button class="btn" id="disturb-btn">Disturb Blob</button>
+        </div>
+    </div>
+
+    <div id="telemetry" class="panel">
+        <h1>Telemetry</h1>
+        <div style="font-family: monospace; font-size: 0.8rem; color: #4ade80;">
+            Blob Volume: 100%<br>
+            Deformation Index: <span id="deformation">0.00</span><br>
+            Vibration Freq: <span id="frequency">1.2Hz</span>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. SETUP THREE.JS SCENE ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050510, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 0, 5);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+
+        // --- 2. LIGHTING (Cinematic Space Style) ---
+        const ambientLight = new THREE.AmbientLight(0x0a0f2d, 1.5);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0x38bdf8, 2.5);
+        directionalLight.position.set(5, 5, 5);
+        scene.add(directionalLight);
+
+        const rimLight = new THREE.DirectionalLight(0xff00ff, 1);
+        rimLight.position.set(-5, -3, -5);
+        scene.add(rimLight);
+
+        // --- 3. STARS BACKGROUND ---
+        const starsGeometry = new THREE.BufferGeometry();
+        const starsCount = 2000;
+        const starPositions = new Float32Array(starsCount * 3);
+        for(let i = 0; i < starsCount * 3; i++) {
+            starPositions[i] = (Math.random() - 0.5) * 100;
+        }
+        starsGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        const starsMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 0.1, sizeAttenuation: true });
+        const starField = new THREE.Points(starsGeometry, starsMaterial);
+        scene.add(starField);
+
+        // --- 4. FLUID SHADER (Water Blob Simulation) ---
+        // Using a high-resolution sphere and shifting vertices along normals in the CPU for compatibility
+        const geom = new THREE.SphereGeometry(1.5, 64, 64);
+        const originalPositions = geom.attributes.position.clone();
+        
+        const mat = new THREE.MeshPhysicalMaterial({
+            color: 0x0ea5e9,
+            roughness: 0.1,
+            metalness: 0.1,
+            transmission: 0.6, // Glass/liquid refractive index look
+            thickness: 1.5,
+            ior: 1.333,
+            transparent: true,
+            opacity: 0.9,
+            flatShading: false
+        });
+
+        const waterBlob = new THREE.Mesh(geom, mat);
+        scene.add(waterBlob);
+
+        // --- 5. INTERACTIVE VARIABLES & PHYSICS ENGINE SIMULATOR ---
+        let gravity = 0;
+        let tension = 5;
+        let perturbation = 0;
+        let time = 0;
+
+        // UI Listeners
+        const gravityInput = document.getElementById('gravity');
+        const gravityLabel = document.getElementById('gravity-label');
+        gravityInput.addEventListener('input', (e) => {
+            gravity = parseFloat(e.target.value);
+            gravityLabel.innerText = `Gravity: ${gravity.toFixed(2)} m/s²`;
+        });
+
+        const tensionInput = document.getElementById('tension');
+        const tensionLabel = document.getElementById('tension-label');
+        tensionInput.addEventListener('input', (e) => {
+            tension = parseFloat(e.target.value);
+            tensionLabel.innerText = `Surface Tension: ${tension.toFixed(1)}`;
+        });
+
+        document.getElementById('disturb-btn').addEventListener('click', () => {
+            perturbation = 2.0; // Instantly bump up fluid oscillation
+        });
+
+        // --- 6. ANIMATION & INTEGRATION LOOP ---
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const delta = clock.getDelta();
+            time += delta;
+
+            // Decay perturbation back to equilibrium based on surface tension
+            perturbation += (0 - perturbation) * (tension * 0.1) * delta * 60;
+
+            // Update Telemetry UI
+            document.getElementById('deformation').innerText = (perturbation * 0.25).toFixed(3);
+            document.getElementById('frequency').innerText = `${(tension * 0.5 + 0.5).toFixed(1)}Hz`;
+
+            // Microgravity Math Model: deform vertices based on sine waves + perturbation values
+            const posAttr = geom.attributes.position;
+            const originalArray = originalPositions.array;
+            const currentArray = posAttr.array;
+
+            const tempV3 = new THREE.Vector3();
+            for (let i = 0; i < posAttr.count; i++) {
+                tempV3.fromArray(originalArray, i * 3);
+                
+                // Mathematical wave simulation to replicate fluid surface dynamics:
+                const wave = Math.sin(tempV3.x * 2 + time * (tension * 1.5)) * 
+                             Math.cos(tempV3.y * 2 + time * (tension * 1.3)) * 
+                             Math.sin(tempV3.z * 2 + time * (tension * 1.7));
+                
+                // Scaling effect representing external disturbances vs. surface elasticity
+                const displacement = wave * 0.12 * perturbation; 
+                
+                // Normal direction projection
+                tempV3.normalize().multiplyScalar(1.5 + displacement);
+
+                // Apply gravity vector pull over time
+                tempV3.y -= (gravity * 0.05);
+
+                currentArray[i * 3] = tempV3.x;
+                currentArray[i * 3 + 1] = tempV3.y;
+                currentArray[i * 3 + 2] = tempV3.z;
+            }
+            
+            posAttr.needsUpdate = true;
+            geom.computeVertexNormals(); // Recalculate lighting reflections on fluid surface
+
+            // Keep rotation slowly moving so lighting highlights shine nicely
+            waterBlob.rotation.y += 0.005;
+
+            renderer.render(scene, camera);
+        }
+
+        // --- 7. RESIZING SUPPORT ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
